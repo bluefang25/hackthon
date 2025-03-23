@@ -1,27 +1,17 @@
-//File: example/example-node.ts
-
 import { z } from "zod";
 import axios from "axios";
-
-import { defineDAINService, ToolConfig } from "@dainprotocol/service-sdk";
-
-import {
-  DainResponse,
-  AlertUIBuilder,
-  CardUIBuilder,
-  TableUIBuilder,
-  MapUIBuilder,
-  LayoutUIBuilder,
-} from "@dainprotocol/utils";
+import { defineDAINService, ToolConfig, ServicePinnable } from "@dainprotocol/service-sdk";
+import { AlertUIBuilder, TableUIBuilder, LayoutUIBuilder, ChartUIBuilder,ImageCardUIBuilder, DainResponse, CardUIBuilder, MapUIBuilder } from "@dainprotocol/utils";
 
 const port = Number(process.env.PORT) || 2022;
 const apiKey = '6ca0b6efffe246cda90e204dc02085e6';
 
 interface PlaceProperties {
-  name: string;
+  name?: string;  // Make 'name' optional
   categories: string[];
-  formatted: string;
+  formatted?: string;  // Make 'formatted' optional
 }
+
 interface GeoapifyResponse {
   features: Array<{
     properties: PlaceProperties;
@@ -31,6 +21,7 @@ interface GeoapifyResponse {
     };
   }>;
 }
+
 const getFunRec: ToolConfig = {
   id: "get-FunRec",
   name: "Get FunRec",
@@ -46,212 +37,163 @@ const getFunRec: ToolConfig = {
     .object({
       places: z.array(
         z.object({
-        name: z.string(),
-        category: z.string(),
-        address: z.string(),
+          name: z.string().optional(),
+          category: z.string(),
+          address: z.string().default("No address available"),
         })
-    ),
-  })
+      ),
+    })
     .describe("List of places with fun Activities"),
   pricing: { pricePerUse: 0, currency: "USD" },
-  handler: async ( { locationName, latitude, longitude }, agentInfo,context) => 
-  {
+  
+  handler: async ({ locationName, latitude, longitude }, agentInfo, context) => {
     console.log(
       `User / Agent ${agentInfo.id} requested activities at ${locationName} (${latitude},${longitude})`
     );
 
-    const response = await axios.get<GeoapifyResponse>(
-      `https://api.geoapify.com/v2/places?lat=${latitude}&lon=${longitude}&categories=tourism,leisure&limit=10&apiKey=${apiKey}`
-    );
+    try {
+      const response = await axios.get<GeoapifyResponse>(
+        `https://api.geoapify.com/v2/places?lat=${latitude}&lon=${longitude}&categories=tourism,leisure&limit=10&apiKey=${apiKey}`
+      );
 
-    const places = response.data.features;
-    //console.log("test")
-    
-    //console.log(places)
-    const placeList = places.map((place, index) => {
-      let name = place.properties.name
-      const longtitude = place.geometry.coordinates[0];
-      const latitude = place.geometry.coordinates[1];
-      if (name === undefined) {
-        name = "unknown"
+      const places = response.data.features;
+
+      // Handle empty results
+      if (places.length === 0) {
+        return {
+          text: `No fun activities found near ${locationName}.`,
+          data: {},
+          ui: new CardUIBuilder()
+            .setRenderMode("page")
+            .title(`No Activities Found`)
+            .content(`Sorry, we couldn't find any activities in ${locationName}. Try another location!`)
+            .build(),
+        };
       }
 
+      const placeList = places.map((place) => {
+        let name = place.properties.name;
+        if (name === undefined) return null;  // Skip places without a name
+
+        const placeLatitude = place.geometry.coordinates[1];  // Correcting to use latitude
+        const placeLongitude = place.geometry.coordinates[0]; // Correcting to use longitude
+        const address = place.properties.formatted || "No address available";  // Fallback if address is missing
+
+        return {
+          name: name,
+          category: place.properties.categories.join(", "),
+          address: address, // Ensure this is always a string
+          latitude: placeLatitude,
+          longitude: placeLongitude,
+        };
+      }).filter((place) => place !== null);  // Filter out null values
+
+      const placesText = placeList
+        .map((place, index) => `${index + 1}. ${place.name} - ${place.address}`)
+        .join("\n");
+
       return {
-        name: name,
-        category: place.properties.categories.join(", "),
-        address: place.properties.formatted,
-        latitude: latitude,
-        longitude: longitude,
+        text: `Here are some fun activities in ${locationName}:\n${placesText}`,
+        data: {
+          places: placeList,
+        },
+        ui: new CardUIBuilder()
+          .setRenderMode("page")
+          .title(`Fun Activities in ${locationName}`)
+          .addChild(
+            new MapUIBuilder()
+              .setInitialView(latitude, longitude, 10)
+              .setMapStyle("mapbox://styles/mapbox/streets-v12")
+              .addMarkers(
+                placeList.map((place) => ({
+                  latitude: place.latitude,
+                  longitude: place.longitude,
+                  title: place.name,
+                  description: `Explore ${place.name}`,
+                  text: place.name,
+                }))
+              )
+              .build()
+          )
+          .content(`Discover exciting activities in ${locationName} today!`)
+          .build(),
       };
-    });
-    return {
-      text: `Heres a list of FUN activities in ${locationName}:\n${placeList}`,
-        
-      data: {
-        places: placeList
-       },
-       ui: new CardUIBuilder()
-       .setRenderMode("page")
-       .title(`Fun Activities in ${locationName}`)
-       .addChild(
-         new MapUIBuilder()
-           .setInitialView(latitude, longitude, 10)
-           .setMapStyle("mapbox://styles/mapbox/streets-v12")
-           .addMarkers(
-            placeList.map((place) => ({
-               latitude: place.latitude,
-               longitude: place.longitude,
-               title: place.name,
-               description: `Explore ${place.name}`,
-               text: `${place.name}`,
-             }))
-           )
-           .build()
-       )
-       .content(`Discover exciting activities in ${locationName} today!`)
-       .build(),
-    };
+    } catch (error) {
+      console.error("Error fetching places:", error);
+      return {
+        text: `Sorry, we couldn't fetch activities for ${locationName}. Please try again later.`,
+        data: {},
+        ui: new CardUIBuilder()
+          .setRenderMode("page")
+          .title("Error")
+          .content(`There was an issue fetching the activities. Please try again later.`)
+          .build(),
+      };
+    }
   },
 };
 
-const createSearchResponse = (results: any) => {
-  const alertUI = new AlertUIBuilder()
-    .variant("info")
-    .title("Search Complete")
-    .message("Found 3 matching results")
-    .build();
+const getFunRecWidget: ServicePinnable = {
+  id: "funRec",
+  name: "Recreation Activities",
+  description: "Shows available recreational activities",
+  type: "widget",
+  label: "Recreation",
+  icon: "map",
 
-  const tableUI = new TableUIBuilder()
-    .addColumns([
-      {
-        key: "name", header: "Name",
-        type: ""
-      },
-      {
-        key: "value", header: "Value",
-        type: ""
+  getWidget: async () => {
+    try {
+      // Fetch recreation data
+      const recResults = await fetchRecreationData();
+
+      // Recreation Table UI
+      const recTableUI = new TableUIBuilder()
+        .addColumns([
+          {
+            key: "name", header: "Activity",
+            type: ""
+          },
+          {
+            key: "location", header: "Location",
+            type: ""
+          },
+          {
+            key: "cost", header: "Cost ($)",
+            type: ""
+          }
+        ])
+        .rows(recResults);
+
+      // Compose UI Layout
+      const cardUI = new CardUIBuilder()
+        .title("Recreation Activities")
+        .addChild(new AlertUIBuilder().variant("info").message("Explore fun activities near you!").build())
+        .addChild(recTableUI.build());
+
+      return new DainResponse({
+        text: "Recreation data loaded",
+        data: recResults,
+        ui: cardUI.build()
+      });
+
+    } catch (error) {
+      return new DainResponse({
+        text: "Failed to load recreation data",
+        data: null,
+        ui: new AlertUIBuilder()
+          .variant("error")
+          .message("Unable to load activities. Please try again later.")
+          .build()
+        });
       }
-    ])
-    .rows(results)
-    .build();
+    }
+  };
 
-  const cardUI = new CardUIBuilder()
-    .title("Search Results")
-    .addChild(alertUI)
-    .addChild(tableUI)
-    .build();
 
-  return new DainResponse({
-    text: "Search complete",
-    data: results,
-    ui: cardUI
-  });
-};
-// const getWeatherForecastConfig: ToolConfig = {
-//   id: "get-weather-forecast",
-//   name: "Get Weather Forecast",
-//   description: "Fetches hourly weather forecast",
-//   input: z
-//     .object({
-//       locationName: z.string().describe("Location name"),
-//       latitude: z.number().describe("Latitude coordinate"),
-//       longitude: z.number().describe("Longitude coordinate"),
-//     })
-//     .describe("Input parameters for the forecast request"),
-//   output: z
-//     .object({
-//       times: z.array(z.string()).describe("Forecast times"),
-//       temperatures: z
-//         .array(z.number())
-//         .describe("Temperature forecasts in Celsius"),
-//       windSpeeds: z.array(z.number()).describe("Wind speed forecasts in km/h"),
-//       humidity: z
-//         .array(z.number())
-//         .describe("Relative humidity forecasts in %"),
-//     })
-//     .describe("Hourly weather forecast"),
-//   pricing: { pricePerUse: 0, currency: "USD" },
-//   handler: async (
-//     { locationName, latitude, longitude },
-//     agentInfo,
-//     context
-//   ) => {
-//     console.log(
-//       `User / Agent ${agentInfo.id} requested forecast at ${locationName} (${latitude},${longitude})`
-//     );
-
-//     const response = await axios.get(
-//       `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m`
-//     );
-
-//     const { time, temperature_2m, wind_speed_10m, relative_humidity_2m } =
-//       response.data.hourly;
-
-//     // Limit to first 24 hours of forecast data
-//     const limitedTime = time.slice(0, 24);
-//     const limitedTemp = temperature_2m.slice(0, 24);
-//     const limitedWind = wind_speed_10m.slice(0, 24);
-//     const limitedHumidity = relative_humidity_2m.slice(0, 24);
-
-//     const weatherEmoji = getWeatherEmoji(limitedTemp[0]);
-
-//     return {
-//       text: `Weather forecast for ${locationName} available for the next 24 hours`,
-//       data: {
-//         times: limitedTime,
-//         temperatures: limitedTemp,
-//         windSpeeds: limitedWind,
-//         humidity: limitedHumidity,
-//       },
-//       ui: new LayoutUIBuilder()
-//         .setRenderMode("page")
-//         .setLayoutType("column")
-//         .addChild(
-//           new MapUIBuilder()
-//             .setInitialView(latitude, longitude, 10)
-//             .setMapStyle("mapbox://styles/mapbox/streets-v12")
-//             .addMarkers([
-//               {
-//                 latitude,
-//                 longitude,
-//                 title: locationName,
-//                 description: `Temperature: ${limitedTemp[0]}°C\nWind: ${limitedWind[0]} km/h`,
-//                 text: `${locationName} ${weatherEmoji}`,
-//               },
-//             ])
-//             .build()
-//         )
-//         .addChild(
-//           new TableUIBuilder()
-//             .addColumns([
-//               { key: "time", header: "Time", type: "string" },
-//               {
-//                 key: "temperature",
-//                 header: "Temperature (°C)",
-//                 type: "number",
-//               },
-//               { key: "windSpeed", header: "Wind Speed (km/h)", type: "number" },
-//               { key: "humidity", header: "Humidity (%)", type: "number" },
-//             ])
-//             .rows(
-//               limitedTime.map((t: string, i: number) => ({
-//                 time: new Date(t).toLocaleString(),
-//                 temperature: limitedTemp[i],
-//                 windSpeed: limitedWind[i],
-//                 humidity: limitedHumidity[i],
-//               }))
-//             )
-//             .build()
-//         )
-//         .build(),
-//     };
-//   },
-// };
 const dainService = defineDAINService({
   metadata: {
     title: "FunRec DAIN Service",
-    description:
-      "A DAIN service for recommending Activities API",
+    description: "A DAIN service for recommending Activities API",
     version: "1.0.0",
     author: "Mark and Renzo",
     tags: ["Activities", "fun", "dain"],
