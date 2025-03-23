@@ -1,15 +1,13 @@
 import { z } from "zod";
 import axios from "axios";
-import { defineDAINService, ToolConfig, ServicePinnable } from "@dainprotocol/service-sdk";
-import { AlertUIBuilder, TableUIBuilder, LayoutUIBuilder, ChartUIBuilder,ImageCardUIBuilder, DainResponse, CardUIBuilder, MapUIBuilder } from "@dainprotocol/utils";
+import { defineDAINService, ToolConfig } from "@dainprotocol/service-sdk";
+import { CardUIBuilder, MapUIBuilder, ImageCardUIBuilder } from "@dainprotocol/utils";
 
-const port = Number(process.env.PORT) || 2022;
-const apiKey = '6ca0b6efffe246cda90e204dc02085e6';
-
+const geoapifyApiKey = '6ca0b6efffe246cda90e204dc02085e6';  // Geoapify API Key
 interface PlaceProperties {
-  name?: string;  // Make 'name' optional
+  name?: string;
   categories: string[];
-  formatted?: string;  // Make 'formatted' optional
+  formatted?: string;
 }
 
 interface GeoapifyResponse {
@@ -21,7 +19,6 @@ interface GeoapifyResponse {
     };
   }>;
 }
-
 const getFunRec: ToolConfig = {
   id: "get-FunRec",
   name: "Get FunRec",
@@ -37,7 +34,7 @@ const getFunRec: ToolConfig = {
     .object({
       places: z.array(
         z.object({
-          name: z.string().optional(),
+          name: z.string().nullable().optional(),
           category: z.string(),
           address: z.string().default("No address available"),
         })
@@ -45,20 +42,24 @@ const getFunRec: ToolConfig = {
     })
     .describe("List of places with fun Activities"),
   pricing: { pricePerUse: 0, currency: "USD" },
-  
+
   handler: async ({ locationName, latitude, longitude }, agentInfo, context) => {
     console.log(
       `User / Agent ${agentInfo.id} requested activities at ${locationName} (${latitude},${longitude})`
     );
 
     try {
+      // Fetch places from Geoapify API
       const response = await axios.get<GeoapifyResponse>(
-        `https://api.geoapify.com/v2/places?lat=${latitude}&lon=${longitude}&categories=tourism,leisure&limit=10&apiKey=${apiKey}`
+        `https://api.geoapify.com/v2/places?lat=${latitude}&lon=${longitude}&categories=tourism,leisure&limit=10&apiKey=${geoapifyApiKey}`
       );
 
+      if (response.status !== 200) {
+        throw new Error("Failed to fetch places from Geoapify");
+      }
+      
       const places = response.data.features;
 
-      // Handle empty results
       if (places.length === 0) {
         return {
           text: `No fun activities found near ${locationName}.`,
@@ -66,60 +67,71 @@ const getFunRec: ToolConfig = {
           ui: new CardUIBuilder()
             .setRenderMode("page")
             .title(`No Activities Found`)
+          
             .content(`Sorry, we couldn't find any activities in ${locationName}. Try another location!`)
             .build(),
         };
       }
 
-      const placeList = places.map((place) => {
-        let name = place.properties.name;
-        if (name === undefined) return null;  // Skip places without a name
+      const placeList = places
+        .map((place) => {
+          let name = place.properties.name;
+          if (name === undefined) return null;  // Skip places without a name
 
-        const placeLatitude = place.geometry.coordinates[1];  // Correcting to use latitude
-        const placeLongitude = place.geometry.coordinates[0]; // Correcting to use longitude
-        const address = place.properties.formatted || "No address available";  // Fallback if address is missing
+          const placeLatitude = place.geometry.coordinates[1];
+          const placeLongitude = place.geometry.coordinates[0];
+          const address = place.properties.formatted || "No address available";
 
-        return {
-          name: name,
-          category: place.properties.categories.join(", "),
-          address: address, // Ensure this is always a string
-          latitude: placeLatitude,
-          longitude: placeLongitude,
-        };
-      }).filter((place) => place !== null);  // Filter out null values
+          return {
+            name: name,
+            category: place.properties.categories.join(", "),
+            address: address,
+            latitude: placeLatitude,
+            longitude: placeLongitude,
+          };
+        })
+        .filter((place) => place !== null); // Filter out null values
 
       const placesText = placeList
         .map((place, index) => `${index + 1}. ${place.name} - ${place.address}`)
         .join("\n");
+return {
+  text: `Here are some fun activities in ${locationName}:\n${placesText}`,
+  data: {
+    places: placeList,
+  },
+  ui: new CardUIBuilder()
+    .setRenderMode("page")
+    .title(`Fun Activities in ${locationName}`)
+    .addChild(
+      new MapUIBuilder()
+        .setInitialView(latitude, longitude, 10)  // Set initial map view, with zoom level 10
+        .setMapStyle("mapbox://styles/mapbox/streets-v12")  // Style of the map
+        .setZoomRange(10,16)
+        .addMarkers(
+          placeList.map((place) => ({
+            latitude: place.latitude,
+            longitude: place.longitude,
+            title: place.name,
+            description: `Explore ${place.name}`,
+            text: place.name,
+          }))
+        )
+        .build()
+    )
+    .addChild(new ImageCardUIBuilder("https://picsum.photos/id/603/300/400")
+    .aspectRatio("square")
+    .title("U.S.A.")
+    .build()
 
-      return {
-        text: `Here are some fun activities in ${locationName}:\n${placesText}`,
-        data: {
-          places: placeList,
-        },
-        ui: new CardUIBuilder()
-          .setRenderMode("page")
-          .title(`Fun Activities in ${locationName}`)
-          .addChild(
-            new MapUIBuilder()
-              .setInitialView(latitude, longitude, 10)
-              .setMapStyle("mapbox://styles/mapbox/streets-v12")
-              .addMarkers(
-                placeList.map((place) => ({
-                  latitude: place.latitude,
-                  longitude: place.longitude,
-                  title: place.name,
-                  description: `Explore ${place.name}`,
-                  text: place.name,
-                }))
-              )
-              .build()
-          )
-          .content(`Discover exciting activities in ${locationName} today!`)
-          .build(),
-      };
+    )  // Add the ImageCard UI below the map
+    .content(`Discover exciting activities in ${locationName} today!`)
+    .build(),
+};
+
+      
     } catch (error) {
-      console.error("Error fetching places:", error);
+      console.error("Error fetching places or image:", error?.message || String(error));
       return {
         text: `Sorry, we couldn't fetch activities for ${locationName}. Please try again later.`,
         data: {},
@@ -132,63 +144,6 @@ const getFunRec: ToolConfig = {
     }
   },
 };
-
-const getFunRecWidget: ServicePinnable = {
-  id: "funRec",
-  name: "Recreation Activities",
-  description: "Shows available recreational activities",
-  type: "widget",
-  label: "Recreation",
-  icon: "map",
-
-  getWidget: async () => {
-    try {
-      // Fetch recreation data
-      const recResults = await fetchRecreationData();
-
-      // Recreation Table UI
-      const recTableUI = new TableUIBuilder()
-        .addColumns([
-          {
-            key: "name", header: "Activity",
-            type: ""
-          },
-          {
-            key: "location", header: "Location",
-            type: ""
-          },
-          {
-            key: "cost", header: "Cost ($)",
-            type: ""
-          }
-        ])
-        .rows(recResults);
-
-      // Compose UI Layout
-      const cardUI = new CardUIBuilder()
-        .title("Recreation Activities")
-        .addChild(new AlertUIBuilder().variant("info").message("Explore fun activities near you!").build())
-        .addChild(recTableUI.build());
-
-      return new DainResponse({
-        text: "Recreation data loaded",
-        data: recResults,
-        ui: cardUI.build()
-      });
-
-    } catch (error) {
-      return new DainResponse({
-        text: "Failed to load recreation data",
-        data: null,
-        ui: new AlertUIBuilder()
-          .variant("error")
-          .message("Unable to load activities. Please try again later.")
-          .build()
-        });
-      }
-    }
-  };
-
 
 const dainService = defineDAINService({
   metadata: {
@@ -215,6 +170,6 @@ const dainService = defineDAINService({
   tools: [getFunRec],
 });
 
-dainService.startNode({ port: port }).then(({ address }) => {
+dainService.startNode({ port: 2022 }).then(({ address }) => {
   console.log("FunRec DAIN Service is running at :" + address().port);
 });
